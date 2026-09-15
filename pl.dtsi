@@ -43,7 +43,10 @@
 				#size-cells = <0>;
 				clock-names = "s_axi_aclk";
 				clocks = <&misc_clk_0>;
-				compatible = "xlnx,axi-iic-2.1";
+				compatible = "xlnx,axi-iic-2.1", "xlnx,xps-iic-2.00.a";
+				interrupt-names = "iic2intc_irpt";
+				interrupt-parent = <&gic>;
+				interrupts = <0 89 4>;
 				reg = <0x0 0x80010000 0x0 0x10000>;
 			};
 
