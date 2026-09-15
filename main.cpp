@@ -1,126 +1,74 @@
 #include <iostream>
 #include <fcntl.h>
-#include <unistd.h>
 #include <sys/mman.h>
-#include <sys/ioctl.h>
-#include <linux/videodev2.h>
+#include <unistd.h>
+#include <cstdint>
 #include <cstring>
-#include <vector>
+#include <fstream>
 
-// Cập nhật chuẩn theo Address Editor Vivado của bạn
-#define HOLOGRAM_BASE_ADDR   0xA0010000  
-#define MAP_SIZE             0x10000
+#define ADDR_SCALER      0xA0040000
+#define ADDR_HOLO        0xA0010000
+#define ADDR_FRMBUF_WR   0xA0030000
+#define FRAME_BUFFER_PHY 0x70000000 // Địa chỉ vật lý DDR
+#define FRAME_SIZE       (1920 * 1080 * 3)
 
-#define AP_CTRL_OFFSET       0x00
-#define AP_START             (1 << 0)
-#define AUTO_RESTART         (1 << 7)
-
-void start_hologram_core(int mem_fd) {
-    void* virt_base = mmap(NULL, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, mem_fd, HOLOGRAM_BASE_ADDR);
-    if (virt_base == MAP_FAILED) {
-        perror("Lỗi mmap cho Hologram IP");
-        return;
+volatile uint32_t* map_hw(int fd, off_t target) {
+    void* map_base = mmap(0, 0x10000, PROT_READ | PROT_WRITE, MAP_SHARED, fd, target & ~0xFFFF);
+    if (map_base == MAP_FAILED) {
+        perror("mmap failed");
+        exit(1);
     }
-
-    volatile uint32_t* ap_ctrl = (volatile uint32_t*)((uint8_t*)virt_base + AP_CTRL_OFFSET);
-
-    // Kích hoạt auto-restart và ap_start (0x81)
-    *ap_ctrl = AUTO_RESTART | AP_START;
-    std::cout << ">> Khởi động Hologram IP tại 0x" << std::hex << HOLOGRAM_BASE_ADDR 
-              << " | Control Reg: 0x" << *ap_ctrl << std::dec << std::endl;
-
-    munmap(virt_base, MAP_SIZE);
+    return (volatile uint32_t*)((uint8_t*)map_base + (target & 0xFFFF));
 }
 
 int main() {
-    // 1. Kích hoạt IP Hologram qua AXI-Lite
-    int mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
-    if (mem_fd < 0) {
-        perror("Không thể mở /dev/mem (Chạy với quyền sudo)");
-        return -1;
-    }
-    start_hologram_core(mem_fd);
-    close(mem_fd);
-
-    // 2. Mở V4L2 Device Node từ Frame Buffer Write
-    int video_fd = open("/dev/video0", O_RDWR);
-    if (video_fd < 0) {
-        perror("Không thể mở /dev/video0");
+    int fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (fd < 0) {
+        perror("Cannot open /dev/mem (Need sudo)");
         return -1;
     }
 
-    struct v4l2_format fmt;
-    memset(&fmt, 0, sizeof(fmt));
-    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    fmt.fmt.pix_mp.width = 1920;
-    fmt.fmt.pix_mp.height = 1080;
-    fmt.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_BGR24;
-    fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
-    fmt.fmt.pix_mp.num_planes = 1;
+    // 1. Ánh xạ các IP Core
+    volatile uint32_t* vpss_scaler = map_hw(fd, ADDR_SCALER);
+    volatile uint32_t* holo        = map_hw(fd, ADDR_HOLO);
+    volatile uint32_t* frmbuf      = map_hw(fd, ADDR_FRMBUF_WR);
 
-    if (ioctl(video_fd, VIDIOC_S_FMT, &fmt) < 0) {
-        perror("Lỗi VIDIOC_S_FMT");
-        close(video_fd);
+    // 2. Ánh xạ bộ nhớ đệm DDR FrameBuffer vào Userspace để đọc ảnh
+    uint8_t* frame_ptr = (uint8_t*)mmap(0, FRAME_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, FRAME_BUFFER_PHY);
+    if (frame_ptr == MAP_FAILED) {
+        perror("mmap FrameBuffer failed");
         return -1;
     }
 
-    // 3. Khởi tạo Buffer DMA
-    struct v4l2_requestbuffers req;
-    memset(&req, 0, sizeof(req));
-    req.count = 4;
-    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    req.memory = V4L2_MEMORY_MMAP;
-    ioctl(video_fd, VIDIOC_REQBUFS, &req);
+    std::cout << "[+] Configuring VPSS Scaler (1080p -> 360x360)..." << std::endl;
+    // Cấu hình thanh ghi VPSS Scaler AXI-Lite
+    vpss_scaler[0x10 / 4] = 1920; // Input Width
+    vpss_scaler[0x18 / 4] = 1080; // Input Height
+    vpss_scaler[0x20 / 4] = 360;  // Output Width
+    vpss_scaler[0x28 / 4] = 360;  // Output Height
+    vpss_scaler[0x00 / 4] = 0x81; // Auto-restart + Start
 
-    struct Buffer { void* start; size_t length; };
-    std::vector<Buffer> buffers(req.count);
+    std::cout << "[+] Starting Hologram Splitter Core..." << std::endl;
+    holo[0x00 / 4] = 0x81; // Auto-restart + Start
 
-    for (size_t i = 0; i < req.count; ++i) {
-        struct v4l2_buffer buf;
-        struct v4l2_plane planes[1];
-        memset(&buf, 0, sizeof(buf));
-        memset(planes, 0, sizeof(planes));
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-        buf.memory = V4L2_MEMORY_MMAP;
-        buf.index = i;
-        buf.m.planes = planes;
-        buf.length = 1;
+    std::cout << "[+] Configuring FrameBuffer Write Engine (1920x1080 RGB888)..." << std::endl;
+    frmbuf[0x10 / 4] = 1920;             // Width
+    frmbuf[0x18 / 4] = 1080;             // Height
+    frmbuf[0x20 / 4] = 1920 * 3;         // Stride (Bytes per line)
+    frmbuf[0x28 / 4] = 20;               // Video Format ID: RGB888
+    frmbuf[0x30 / 4] = FRAME_BUFFER_PHY; // Buffer 0 Base Address (Lower 32-bit)
+    frmbuf[0x34 / 4] = 0x00000000;       // Buffer 0 Base Address (Upper 32-bit)
+    frmbuf[0x00 / 4] = 0x81;             // ap_start + auto_restart
 
-        ioctl(video_fd, VIDIOC_QUERYBUF, &buf);
-        buffers[i].length = buf.m.planes[0].length;
-        buffers[i].start = mmap(NULL, buf.m.planes[0].length, PROT_READ | PROT_WRITE, MAP_SHARED,
-                                video_fd, buf.m.planes[0].m.mem_offset);
-        ioctl(video_fd, VIDIOC_QBUF, &buf);
-    }
+    std::cout << "[+] Hardware Streaming active. Capturing 1 frame..." << std::endl;
+    usleep(100000); // Đợi 100ms cho phần cứng ghi ít nhất 1 frame đầy đủ
 
-    // 4. Bật Streaming
-    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    if (ioctl(video_fd, VIDIOC_STREAMON, &type) < 0) {
-        perror("Lỗi VIDIOC_STREAMON");
-        return -1;
-    }
-    std::cout << ">> Pipeline Hologram 1080p đang chạy ổn định!" << std::endl;
+    // Lưu frame ra file nhị phân raw để kiểm tra kết quả
+    std::ofstream out("frame_hologram_1080p.raw", std::ios::binary);
+    out.write((char*)frame_ptr, FRAME_SIZE);
+    out.close();
+    std::cout << "[+] Saved frame_hologram_1080p.raw (" << FRAME_SIZE << " bytes) successfully!" << std::endl;
 
-    // Lấy thử 10 frame mẫu
-    for (int i = 0; i < 10; i++) {
-        struct v4l2_buffer buf;
-        struct v4l2_plane planes[1];
-        memset(&buf, 0, sizeof(buf));
-        memset(planes, 0, sizeof(planes));
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-        buf.memory = V4L2_MEMORY_MMAP;
-        buf.m.planes = planes;
-        buf.length = 1;
-
-        ioctl(video_fd, VIDIOC_DQBUF, &buf);
-        std::cout << "-> Đã nhận Frame " << i << " [1920x1080 Hologram Frame]" << std::endl;
-        ioctl(video_fd, VIDIOC_QBUF, &buf);
-    }
-
-    // Tắt luồng
-    ioctl(video_fd, VIDIOC_STREAMOFF, &type);
-    for (auto& b : buffers) munmap(b.start, b.length);
-    close(video_fd);
-
+    close(fd);
     return 0;
 }
