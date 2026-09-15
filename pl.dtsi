@@ -121,7 +121,7 @@
 				/* This is a place holder node for a custom IP, user may need to update the entries */
 				clock-names = "ap_clk";
 				clocks = <&misc_clk_1>;
-				compatible = "xlnx,hologram-splitter-4way-2.0";
+				compatible = "xlnx,v-hls-video-1.0", "xlnx,video";
 				interrupt-names = "interrupt";
 				interrupt-parent = <&gic>;
 				interrupts = <0 94 4>;
