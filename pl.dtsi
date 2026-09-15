@@ -35,6 +35,34 @@
 		};
 	};
 	fragment@2 {
+		target-path="/";
+		overlay_imx219_power: __overlay__ {
+			imx219_vana: fixedregulator0 {
+				compatible = "regulator-fixed";
+				regulator-name = "imx219_vana";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+			imx219_vdig: fixedregulator1 {
+				compatible = "regulator-fixed";
+				regulator-name = "imx219_vdig";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+			imx219_vddl: fixedregulator2 {
+				compatible = "regulator-fixed";
+				regulator-name = "imx219_vddl";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1200000>;
+			};
+			imx219_clk: camera-clk {
+				compatible = "fixed-clock";
+				#clock-cells = <0>;
+				clock-frequency = <24000000>;
+			};
+		};
+	};
+	fragment@3 {
 		target = <&amba>;
 		overlay2: __overlay__ {
 			#address-cells = <2>;
@@ -49,6 +77,40 @@
 				interrupt-parent = <&gic>;
 				interrupts = <0 89 4>;
 				reg = <0x0 0x80010000 0x0 0x10000>;
+				iic_mux_0: i2c_mux@74 { /* u18 */
+					compatible = "nxp,pca9546";
+					#address-cells = <1>;
+					#size-cells = <0>;
+					reg = <0x74>;
+					isa0_i2c0: i2c@0 {
+						reg = <0>;
+					};
+					isa1_i2c1: i2c@1 {
+						reg = <1>;
+					};
+					rpi_i2c2: i2c@2 {
+						#address-cells = <1>;
+						#size-cells = <0>;
+						reg = <2>;
+						imx219: sensor@10 {
+							compatible = "sony,imx219";
+							reg = <0x10>;
+							clocks = <&imx219_clk>;
+							VANA-supply = <&imx219_vana>;   /* 2.8v */
+							VDIG-supply = <&imx219_vdig>;   /* 1.8v */
+							VDDL-supply = <&imx219_vddl>;   /* 1.2v */
+							port {
+								imx219_0: endpoint {
+									remote-endpoint = <&mipi_csi_inmipi_csi2_rx_subsyst>;
+									data-lanes = <1 2>;
+									clock-noncontinuous;
+									link-frequencies = /bits/ 64 <456000000>;
+								};
+							};
+						};
+					};
+					/* Bus 4/4 khong su dung */
+				};
 			};
 			misc_clk_0: misc_clk_0 {
 				#clock-cells = <0>;
@@ -84,7 +146,7 @@
 						xlnx,video-format = <3>;
 						xlnx,video-width = <8>;
 						hologram_outv_frmbuf_wr: endpoint {
-							remote-endpoint = <&v_frmbuf_wr_in>;
+							remote-endpoint = <&vcap_in>;
 						};
 					};
 				};
@@ -129,6 +191,7 @@
 						xlnx,video-format = <12>;
 						xlnx,video-width = <8>;
 						mipi_csi_inmipi_csi2_rx_subsyst: endpoint {
+							remote-endpoint = <&imx219_0>;
 							data-lanes = <1 2>;
 						};
 					};
@@ -189,19 +252,6 @@
 				xlnx,s-axi-ctrl-data-width = <0x20>;
 				xlnx,vid-formats = "rgb888", "bgr888", "xbgr8888", "xrgb8888", "vuy888", "xvuy8888", "nv12";
 				xlnx,video-width = <8>;
-				frmbuf_wr_ports: ports {
-					#address-cells = <1>;
-					#size-cells = <0>;
-					frmbuf_wr_port0: port@0 {
-						/* Input: nhan canvas 1920x1080 tu hologram_splitter_4way */
-						reg = <0>;
-						xlnx,video-format = <3>;
-						xlnx,video-width = <8>;
-						v_frmbuf_wr_in: endpoint {
-							remote-endpoint = <&hologram_outv_frmbuf_wr>;
-						};
-					};
-				};
 			};
 			v_gamma_lut: v_gamma_lut@a0080000 {
 				clock-names = "ap_clk";
@@ -316,6 +366,22 @@
 						xlnx,video-width = <8>;
 						v_proc_ss_scalerv_proc_ss_csc: endpoint {
 							remote-endpoint = <&csc_outv_proc_ss_csc>;
+						};
+					};
+				};
+			};
+			vcap_holo {
+				compatible = "xlnx,video";
+				dma-names = "port0";
+				dmas = <&v_frmbuf_wr 0>;
+				vcap_ports: ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+					port@0 {
+						reg = <0>;
+						direction = "input";
+						vcap_in: endpoint {
+							remote-endpoint = <&hologram_outv_frmbuf_wr>;
 						};
 					};
 				};
