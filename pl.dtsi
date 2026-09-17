@@ -119,12 +119,16 @@
 
 			/* 1. Khối Hologram Driver Subdevice: gắn clock để tránh AXI bus hang */
 			hologram: hologram_splitter_4way@a0010000 {
-				compatible = "xlnx,hologram-splitter-1.0";
-				reg = <0x0 0xa0010000 0x0 0x10000>;
 				clock-names = "ap_clk";
 				clocks = <&misc_clk_1>;
+				compatible = "xlnx,hologram-splitter-1.0";
+				interrupt-names = "interrupt";
 				interrupt-parent = <&gic>;
 				interrupts = <0 94 4>;
+				reg = <0x0 0xa0010000 0x0 0x10000>;
+				reset-gpios = <&gpio 83 1>;
+				xlnx,s-axi-control-addr-width = <0x4>;
+				xlnx,s-axi-control-data-width = <0x20>;
 
 				hologram_ports: ports {
 					#address-cells = <1>;
