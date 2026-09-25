@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/gpio/consumer.h>
@@ -36,7 +37,7 @@ static inline struct holo_dev *to_holo_dev(struct v4l2_subdev *sd) {
     return container_of(sd, struct holo_dev, subdev);
 }
 
-/* 1. Kích hoạt và dừng luồng theo đúng chuẩn Xilinx */
+/* 1. Kích hoạt và dừng luồng theo chuẩn V4L2 */
 static int holo_s_stream(struct v4l2_subdev *sd, int enable) {
     struct holo_dev *holo = to_holo_dev(sd);
 
@@ -44,7 +45,7 @@ static int holo_s_stream(struct v4l2_subdev *sd, int enable) {
         /* Dừng IP */
         iowrite32(HOLO_STREAM_OFF, holo->base + HOLO_AP_CTRL);
         
-        /* Reset chu kỳ để xả sạch FIFO nội bộ tránh kẹt cho phiên stream sau */
+        /* Reset chu kỳ để xả sạch FIFO nội bộ */
         if (holo->rst_gpio) {
             gpiod_set_value_cansleep(holo->rst_gpio, HOLO_RESET_ASSERT);
             udelay(10);
@@ -69,6 +70,7 @@ static int holo_s_stream(struct v4l2_subdev *sd, int enable) {
     return 0;
 }
 
+/* 2. Hàm lấy pad format tương thích Linux 5.15 */
 static struct v4l2_mbus_framefmt *
 __holo_get_pad_format(struct holo_dev *holo,
                       struct v4l2_subdev_state *sd_state,
@@ -76,7 +78,7 @@ __holo_get_pad_format(struct holo_dev *holo,
 {
     switch (which) {
     case V4L2_SUBDEV_FORMAT_TRY:
-        return v4l2_subdev_state_get_format(sd_state, pad);
+        return v4l2_subdev_get_try_format(&holo->subdev, sd_state, pad);
     case V4L2_SUBDEV_FORMAT_ACTIVE:
         return &holo->formats[pad];
     default:
@@ -116,12 +118,12 @@ static int holo_set_fmt(struct v4l2_subdev *sd,
 
     *__format = fmt->format;
 
-    /* Khóa cố định format RGB 24-bit */
+    /* Khóa format RBG888_1X24 */
     __format->code = MEDIA_BUS_FMT_RBG888_1X24;
     __format->field = V4L2_FIELD_NONE;
     __format->colorspace = V4L2_COLORSPACE_SRGB;
 
-    /* Cấu hình phân giải cho từng cổng */
+    /* Độ phân giải cổng */
     if (fmt->pad == 0) {
         __format->width = 360;
         __format->height = 360;
@@ -174,14 +176,13 @@ static int holo_probe(struct platform_device *pdev) {
     if (holo->clk)
         clk_prepare(holo->clk);
 
-    /* 3. Quản lý GPIO Reset: Ban đầu giữ mức High (Reset) */
+    /* 3. Quản lý GPIO Reset (Active-Low trên phần cứng) */
     holo->rst_gpio = devm_gpiod_get_optional(&pdev->dev, "reset", GPIOD_OUT_HIGH);
     if (IS_ERR(holo->rst_gpio)) {
         dev_err(&pdev->dev, "Failed to get reset GPIO\n");
         return PTR_ERR(holo->rst_gpio);
     }
 
-    /* Nhả Reset (Kéo ap_rst_n lên 1) giống demosaic */
     if (holo->rst_gpio) {
         udelay(100);
         gpiod_set_value_cansleep(holo->rst_gpio, HOLO_RESET_DEASSERT);
